@@ -7,6 +7,7 @@ import (
     "strconv"
     "strings"
 )
+
 const REPLIC_NUM int = 3
 
 type Node struct {
@@ -14,17 +15,27 @@ type Node struct {
     conn net.Conn
 }
 
-func (node Node) Url() string {
+func (node *Node) Url() string {
     return node.url
 }
 
+func (node *Node) Conn() net.Conn {
+    return node.conn
+}
+
 type Ring struct {
-    nodes map[string]*Node
+    nodeMap map[string]*Node
     orderedKeys []string
 }
 
 func NewRing() *Ring {
-    return &Ring{nodes: make(map[string]*Node)}
+    return &Ring{nodeMap: make(map[string]*Node)}
+}
+
+func (ring *Ring) PrintReplics() {
+    for k, v := range ring.nodeMap {
+        fmt.Printf("Replics. key = %s, url = %s\n", k, v.url)
+    }
 }
 
 func (ring *Ring) AddNode(url string) (err error) {
@@ -40,15 +51,15 @@ func (ring *Ring) AddNode(url string) (err error) {
         return err
     }
 
-    for i:= 1; i < REPLIC_NUM; i++ {
+    for i:= 1; i <= REPLIC_NUM; i++ {
         repUrl := url + ":" + strconv.Itoa(i)
         hashVal := fmt.Sprintf("%x", md5.Sum([]byte(repUrl)))
-        ring.nodes[hashVal] = node
+        ring.nodeMap[hashVal] = node
     }
 
     ring.orderedKeys = nil
-    for key := range ring.nodes {
-        ring.orderedKeys = append(ring.orderedKeys, key)
+    for key, _ := range ring.nodeMap {
+    	ring.orderedKeys = append(ring.orderedKeys, key)
     }
     sort.Strings(ring.orderedKeys)
 
@@ -60,21 +71,21 @@ func (ring *Ring) RemoveNode(url string) (err error) {
         return nil
     }
 
-    for i:= 1; i < REPLIC_NUM; i++ {
+    for i:= 1; i <= REPLIC_NUM; i++ {
         repUrl := url + ":" + strconv.Itoa(i)
         hashVal := fmt.Sprintf("%x", md5.Sum([]byte(repUrl)))
-        node := ring.nodes[hashVal]
+        node := ring.nodeMap[hashVal]
         if node != nil {
             err = node.conn.Close()
             if err != nil {
                 fmt.Print("Close connection to %s failed\n", url)
             }
         }
-        delete (ring.nodes, hashVal)
+        delete (ring.nodeMap, hashVal)
     }
 
     ring.orderedKeys = nil
-    for key := range ring.nodes {
+    for key := range ring.nodeMap {
         ring.orderedKeys = append(ring.orderedKeys, key)
     }
     sort.Strings(ring.orderedKeys)
@@ -82,7 +93,7 @@ func (ring *Ring) RemoveNode(url string) (err error) {
     return nil
 }
 
-func (ring *Ring) GetNode(key string) (*Node, error) {
+func (ring *Ring) GetNode(key string) (*Node) {
     hashVal := fmt.Sprintf("%x", md5.Sum([]byte(key)))
     pos := 0
     for ; pos < len(ring.orderedKeys) && ring.orderedKeys[pos] < hashVal; pos++ {
@@ -93,5 +104,9 @@ func (ring *Ring) GetNode(key string) (*Node, error) {
     }
 
     hashVal = ring.orderedKeys[pos]
-    return ring.nodes[hashVal], nil
+    return ring.nodeMap[hashVal]
+}
+
+func (ring *Ring) GetConn(key string) (net.Conn) {
+    return ring.GetNode(key).Conn()
 }

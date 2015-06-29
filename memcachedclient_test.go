@@ -8,9 +8,11 @@ import (
 var mc *MemcachedClient
 
 func TestMain(m *testing.M) {
-    var err error
-    mc, err = NewMemcachedClient("localhost:11211")
-    if err != nil {
+    mc = NewMemcachedClient()
+    mc.AddServer("localhost:11211")
+    mc.AddServer("localhost:11212")
+    mc.AddServer("localhost:11213")
+    if mc.GetServerNum() == 0 {
         os.Exit(1)
     }
     code := m.Run()

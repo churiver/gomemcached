@@ -2,16 +2,15 @@ package gomemcached
 
 import (
     "fmt"
-    //"os"
     "strconv"
     "testing"
 )
 
 var ring *Ring
 
-func TestMain(m *testing.M) {
+func init() {
     ring = new(Ring)
-    ring.nodes = make(map[string]*Node)
+    ring.nodeMap = make(map[string]*Node)
 }
 
 func TestAddNode(t *testing.T) {
@@ -21,8 +20,15 @@ func TestAddNode(t *testing.T) {
 }
 
 func TestGetNode(t *testing.T) {
-    for i := 0; i < 10; i++ {
-        node, _ := ring.GetNode("k" + strconv.Itoa(i))
-        fmt.Printf(node.url)
+    nmap := make(map[string]int)
+    
+    for i := 0; i < 400; i++ {
+        key := "k" + strconv.Itoa(i)
+        node := ring.GetNode(key)
+        nmap[node.Url()] += 1
+    }
+
+    for k, v := range nmap {
+        fmt.Printf("%s: %d\n", k, v)
     }
 }

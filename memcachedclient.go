@@ -2,15 +2,13 @@ package gomemcached
 import (
     "bytes"
     "errors"
-    "fmt"
-    "net"
     "strconv"
     "strings"
 )
 
 type MemcachedClient struct {
-    Urls []string
-    Conns []net.Conn
+    urlMap map[string]int
+    ring *Ring
 }
 
 var (
@@ -19,30 +17,48 @@ var (
     ERR_STORE = errors.New("Failed to store key")
     ERR_GET = errors.New("Failed to get key's value")
     ERR_DELETE = errors.New("Failed to delete key")
+    ERR_SERVER_NOT_FOUND = errors.New("Cannot find the server")
+    ERR_SERVER_EXIST = errors.New("The server exists already")
+    ERR_SERVER_BOUND = errors.New("Only one server left, cannot remove it")
 )
 
-func NewMemcachedClient(serverUrls string) (*MemcachedClient, error) {
-    var err error
-
-    client := MemcachedClient{}
-    client.Urls = strings.Split(serverUrls, ",")
-
-    for i := 0; i < len(client.Urls); i++ {
-        conn, err := net.Dial("tcp", client.Urls[i])
-        if err != nil {
-            fmt.Printf("Failed to connect to %s\n", client.Urls[i])
-            continue
-        }
-        fmt.Printf("Connected to %s\n", client.Urls[i])
-        client.Conns = append(client.Conns, conn)
-    }
-    if len(client.Conns) == 0 {
-        err = ERR_CONNECT
-    }
-    return &client, err
+func NewMemcachedClient() (*MemcachedClient) {
+    return &MemcachedClient{urlMap: make(map[string]int), ring: NewRing()}
 }
 
-func (client *MemcachedClient) store(command, key, value string, flags, exptime int) error {
+func (mc *MemcachedClient) AddServer(url string) (error) {
+    if mc.urlMap[url] != 0 {
+        return ERR_SERVER_EXIST
+    }
+
+    err := mc.ring.AddNode(url)
+    if err == nil {
+        mc.urlMap[url] = 1
+    }
+    return err
+}
+
+func (mc *MemcachedClient) RemoveServer(url string) (error) {
+    if len(mc.urlMap) == 1 {
+        return ERR_SERVER_BOUND
+    }
+
+    if mc.urlMap[url] == 0 {
+        return ERR_SERVER_NOT_FOUND
+    }
+
+    err := mc.ring.RemoveNode(url)
+    if err == nil {
+        delete(mc.urlMap, url)
+    }
+    return err
+}
+
+func (mc *MemcachedClient) GetServerNum() (int) {
+    return len(mc.urlMap)
+}
+
+func (mc *MemcachedClient) store(command, key, value string, flags, exptime int) error {
     var err error
 
     var buf bytes.Buffer
@@ -50,40 +66,41 @@ func (client *MemcachedClient) store(command, key, value string, flags, exptime 
         strconv.Itoa(exptime) + " " + strconv.Itoa(len(value)) + " " +
         "\r\n" + value + "\r\n")
 
-    _, err = client.Conns[0].Write(buf.Bytes())
+    conn := mc.ring.GetConn(key)
+    _, err = conn.Write(buf.Bytes())
     if err != nil {
         return err
     }
 
     response := make([]byte, 512)
-    _, err = client.Conns[0].Read(response)
+    _, err = conn.Read(response)
     if strings.TrimSpace(string(response)) == "ERROR" {
-        err = ERR_STORE
+        return ERR_STORE
     }
     return err
 }
 
-func (client *MemcachedClient) Set(key, value string, flags, exptime int) error {
-    return client.store("set", key, value, flags, exptime)
+func (mc *MemcachedClient) Set(key, value string, flags, exptime int) error {
+    return mc.store("set", key, value, flags, exptime)
 }
 
-func (client *MemcachedClient) Add(key, value string, flags, exptime int) error {
-    return client.store("add", key, value, flags, exptime)
+func (mc *MemcachedClient) Add(key, value string, flags, exptime int) error {
+    return mc.store("add", key, value, flags, exptime)
 }
 
-func (client *MemcachedClient) Replace(key, value string, flags, exptime int) error {
-    return client.store("replace", key, value, flags, exptime)
+func (mc *MemcachedClient) Replace(key, value string, flags, exptime int) error {
+    return mc.store("replace", key, value, flags, exptime)
 }
 
-func (client *MemcachedClient) Append(key, value string, flags, exptime int) error {
-    return client.store("append", key, value, flags, exptime)
+func (mc *MemcachedClient) Append(key, value string, flags, exptime int) error {
+    return mc.store("append", key, value, flags, exptime)
 }
 
-func (client *MemcachedClient) Prepend(key, value string, flags, exptime int) error {
-    return client.store("prepend", key, value, flags, exptime)
+func (mc *MemcachedClient) Prepend(key, value string, flags, exptime int) error {
+    return mc.store("prepend", key, value, flags, exptime)
 }
 
-func (client *MemcachedClient) Get(key string) (string, int, error) {
+func (mc *MemcachedClient) Get(key string) (string, int, error) {
     var value string
     var flags int
     var err error
@@ -91,13 +108,14 @@ func (client *MemcachedClient) Get(key string) (string, int, error) {
     var buf bytes.Buffer
     buf.WriteString("get " + key + "\r\n")
 
-    _, err = client.Conns[0].Write(buf.Bytes())
+    conn := mc.ring.GetConn(key)
+    _, err = conn.Write(buf.Bytes())
     if err != nil {
         return value, flags, err
     }
 
     response := make([]byte, 256)
-    _, err = client.Conns[0].Read(response)
+    _, err = conn.Read(response)
     if err != nil {
         return value, flags, err
     }
@@ -112,21 +130,21 @@ func (client *MemcachedClient) Get(key string) (string, int, error) {
     return value, flags, err
 }
 
-/* TODO func GetMulti */
 
-func (client *MemcachedClient) Delete (key string) error {
+func (mc *MemcachedClient) Delete(key string) error {
     var err error
 
     var buf bytes.Buffer
     buf.WriteString("delete " + key + "\r\n")
 
-    _, err = client.Conns[0].Write(buf.Bytes())
+    conn := mc.ring.GetConn(key)
+    _, err = conn.Write(buf.Bytes())
     if err != nil {
         return err
     }
 
     response := make([]byte, 64)
-    _, err = client.Conns[0].Read(response)
+    _, err = conn.Read(response)
     if err == nil && strings.TrimSpace(string(response)) != "DELETED" {
         err = ERR_DELETE
     }
